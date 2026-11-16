@@ -1,0 +1,11 @@
+# Never commit account material. The plugin stores credentials in
+# $DSH_HOME/.credentials.yaml, outside this repository, but these patterns keep
+# a stray copy from an older checkout out of Git as well.
+.env*
+*.pem
+*.key
+*.p12
+
+node_modules/
+.DS_Store
+*.log

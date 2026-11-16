@@ -1,0 +1,52 @@
+# Polymarket Proxy · keyword filter / 关键词过滤
+# ---------------------------------------------------------------------------
+# One keyword per line; text after # is a comment. Commas and semicolons also
+# separate keywords on one line.
+# An event is hidden from the radar (and from the agent's polymarket_markets
+# list) when its title, tags, market question or outcome contains any keyword.
+# English is case-insensitive; Chinese matches the exact substring.
+#
+# 一行一个关键词；# 后面的内容是注释。也可以用逗号/分号把多个词写在一行。
+# 事件标题、标签、盘口问题、选项里只要出现任意一个词，整个事件都不会
+# 出现在雷达列表里（Agent 的 polymarket_markets 列表同样过滤）。
+# 英文不区分大小写；中文按原文子串匹配。
+#
+# To apply: save, then press Refresh in the panel, or wait for the next sweep.
+# Delete a line to allow that term. Empty this file (do not delete it) to turn
+# filtering off. Pasted polymarket.com event/market links are never filtered.
+# 生效方式：保存后点面板右上角「刷新」，或等下一次自动扫描。想放行某个词：
+# 删掉对应行。想关闭过滤：把本文件清空（不要删文件）。手工粘贴的
+# polymarket.com 事件/盘口链接不受过滤影响，仍会直接打开。
+#
+# Note: matching is by substring, so broad terms like "China" (中国) also hide
+# weather or sports markets that merely mention them; delete such lines if you
+# do not want that.
+# 注意：匹配的是子串，像「中国」「北京」「香港」这种宽词也会隐藏天气、体育
+# 等看起来无关的盘口；不想要就直接删掉。
+# ---------------------------------------------------------------------------
+# 一行一个关键词；# 后面的内容是注释。也可以用逗号/分号把多个词写在一行。
+# 事件标题、标签、盘口问题、选项里只要出现任意一个词，整个事件都不会
+# 出现在雷达列表里（Agent 的 polymarket_markets 列表同样过滤）。
+# 英文不区分大小写；中文按原文子串匹配。
+#
+# 生效方式：保存后点面板右上角「刷新」，或等下一次自动扫描。
+# 想放行某个词：删掉对应行。想关闭过滤：把本文件清空（不要删文件）。
+# 手工粘贴的 polymarket.com 事件/盘口链接不受过滤影响，仍会直接打开。
+#
+# 注意：匹配的是子串，像「中国」「北京」「香港」这种宽词也会隐藏天气、
+# 体育等看起来无关的盘口；不想要就直接删掉。
+# ---------------------------------------------------------------------------
+中国
+中國
+China
+Chinese
+中共
+共产党
+CCP
+中华人民共和国
+习近平
+習近平
+Xi Jinping
+
+
+

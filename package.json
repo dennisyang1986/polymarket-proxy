@@ -1,0 +1,64 @@
+{
+  "name": "dsh-polymarket-proxy",
+  "version": "1.0.1",
+  "description": "Polymarket Proxy for DeepSeek Harness: a local portfolio, cash and deposit-address panel with an auto-refreshing market radar, live betting and instant position closes — for when the official Polymarket site blocks deposits or trading. Follows the Harness language (English unless the interface is Chinese).",
+  "license": "MIT",
+  "author": "dennisyang1986",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisyang1986/polymarket-proxy.git"
+  },
+  "homepage": "https://github.com/dennisyang1986/polymarket-proxy#readme",
+  "bugs": {
+    "url": "https://github.com/dennisyang1986/polymarket-proxy/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "polymarket",
+    "prediction-market",
+    "trading",
+    "portfolio"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "bridge.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "keywords.default.txt",
+    "icon.svg",
+    "assets",
+    "README.md",
+    "README.zh-CN.md",
+    "screenshots.json",
+    "LICENSE"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "dependencies": {
+    "@polymarket/client": "^0.18.0",
+    "qrcode-generator": "^1.4.4",
+    "viem": "^2.57.19"
+  }
+}

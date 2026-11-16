@@ -1,0 +1,3 @@
+- insert:
+    - id: polymarket-proxy
+      name: 'dsh-polymarket-proxy'
