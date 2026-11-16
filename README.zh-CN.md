@@ -195,8 +195,8 @@ Polymarket Proxy 不单独提供语言开关，而是跟随 DeepSeek Harness：
 
 ## 隐私与安全
 
-- **只在本机。** Host 插件挂在同一个回环 `dsh web` 源上，只新增
-  `/api/polymarket-agent/*`。凭据与注销接口只接受回环请求。
+- **只在本机。** Host 插件挂在同一个 `dsh web` 源上，所有路由都会先经过 DSH 的连接
+  准入检查（Host/Origin 与浏览器凭据）；凭据与注销接口另外只接受回环请求。
 - **密钥只存一处。** 钱包、私钥、Relayer key 只写入 DSH 凭据库
   （`$DSH_HOME/.credentials.yaml`，权限 `0600`），不会进 `.env`、日志、`state.json`
   或工作区快照。该文件是本机明文 YAML：安全性取决于操作系统账户权限与磁盘加密，大额

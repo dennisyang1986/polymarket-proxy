@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url'
 import { createBridge } from './bridge.js'
 
 export const name = 'polymarket-agent'
-export const inject = ['tools', 'webServer', 'credentials']
+export const inject = ['tools', 'webServer', 'credentials', 'connection']
 
 const GAMMA = 'https://gamma-api.polymarket.com'
 const DATA_API = 'https://data-api.polymarket.com/v2'
@@ -2190,6 +2190,15 @@ export function createRuntime(ctx, config) {
 
   async function handle(req, res) {
     try {
+      // Every panel call runs through DSH's own connection admission: Host and
+      // Origin checks plus the signed browser credential. A web page open in
+      // the browser therefore cannot drive the trading routes.
+      const rejection = ctx.connection?.requestRejection?.(req)
+      if (rejection !== undefined) {
+        res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+        res.end('connection-rejected')
+        return
+      }
       const url = new URL(req.url ?? '/', 'http://localhost')
       const route = url.pathname.slice(API_PREFIX.length) || '/'
       const method = (req.method ?? 'GET').toUpperCase()

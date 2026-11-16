@@ -216,8 +216,9 @@ filtered. `keywords.default.txt` seeds a new file.
 
 ## Privacy and security
 
-- **Local only.** The Host plugin listens on the same loopback `dsh web` origin and adds
-  `/api/polymarket-agent/*`. Credential and logout endpoints accept loopback requests only.
+- **Local only.** The Host plugin serves under the same `dsh web` origin, and every route
+  passes DSH's connection admission (Host/Origin checks plus the browser credential) before
+  it runs. Credential and logout endpoints additionally accept loopback requests only.
 - **Secrets in one place.** The wallet, private key and Relayer key live in the DSH
   credentials store (`$DSH_HOME/.credentials.yaml`, mode `0600`) — never in `.env`, logs,
   `state.json` or workspace snapshots. That store is plaintext YAML: rely on your OS account
