@@ -1423,23 +1423,21 @@ export function createRuntime(ctx, config) {
   }
 
   /**
-   * Trading limits are owned by the panel (`settings.caps`, written by the
+   * USD caps are owned by the panel (`settings.caps`, written by the
    * onboarding wizard). There is no `.env` or process-environment fallback:
-   * an unset cap is a safe default, never an ambient surprise.
+   * an unset cap is a safe default, never an ambient surprise. There is no
+   * on/off switch: a configured, approved account can order immediately.
    */
   function tradingLimits() {
     const panel = state.settings?.caps && typeof state.settings.caps === 'object' ? state.settings.caps : null
     const maxOrderUsd = positive(panel?.maxOrderUsd, 100)
     const dailyUsd = positive(panel?.dailyUsd, Math.max(maxOrderUsd, 100))
-    const enabled = panel?.enabled !== undefined ? Boolean(panel.enabled) : false
     return {
-      enabled,
       maxOrderUsd,
       dailyUsd,
       source: {
         maxOrderUsd: panel?.maxOrderUsd !== undefined ? 'panel' : 'default',
         dailyUsd: panel?.dailyUsd !== undefined ? 'panel' : 'default',
-        enabled: panel?.enabled !== undefined ? 'panel' : 'default',
       },
     }
   }
@@ -1484,7 +1482,6 @@ export function createRuntime(ctx, config) {
     }
     return {
       ready: status.ready,
-      enabled: limits.enabled,
       limits,
       wallet: status.wallet,
       walletType: status.walletType,
@@ -1497,7 +1494,7 @@ export function createRuntime(ctx, config) {
       pendingUsd: Number(pending.toFixed(2)),
       remainingToday: Number(Math.max(0, limits.dailyUsd - spend - pending).toFixed(2)),
       orders: state.orders.slice(0, 12),
-      reason: !limits.enabled ? 'trading-disabled' : status.reason,
+      reason: status.reason,
       error: status.error,
       at: status.at,
     }
@@ -1776,7 +1773,6 @@ export function createRuntime(ctx, config) {
     await load()
     const status = await liveStatus()
     if (!status.ready) return { ok: false, error: status.reason ?? 'bridge-missing', detail: status.error }
-    if (!status.enabled) return { ok: false, error: 'trading-disabled' }
     const caps = status.limits
     const mode = orderType === 'limit' ? 'limit' : 'market'
     const limitPrice = num(price)
@@ -1877,7 +1873,6 @@ export function createRuntime(ctx, config) {
     await load()
     const status = await liveStatus()
     if (!status.ready) return { ok: false, error: status.reason ?? 'bridge-missing', detail: status.error }
-    if (!status.enabled) return { ok: false, error: 'trading-disabled' }
     let amount = num(shares)
     if (amount <= 0) return { ok: false, error: 'shares-required' }
     const snapshot = await portfolio(true)
@@ -2519,7 +2514,6 @@ export function createRuntime(ctx, config) {
     if (patch?.caps && typeof patch.caps === 'object') {
       const caps = patch.caps
       next.caps = {
-        enabled: Boolean(caps.enabled),
         maxOrderUsd: clamp(num(caps.maxOrderUsd) || 25, 1, 100_000),
         dailyUsd: clamp(num(caps.dailyUsd) || 100, 1, 1_000_000),
       }
@@ -2705,9 +2699,9 @@ export function createRuntime(ctx, config) {
               position.currentPrice * 100
             ).toFixed(1)}¢ = $${position.currentValue.toFixed(2)} (${position.percentPnl.toFixed(1)}%)`,
         )
-      const statusLine = `trading ${status.enabled ? 'enabled' : 'disabled'} · bridge ${
-        status.ready ? 'ready' : `not ready (${status.reason ?? 'unknown'})`
-      }`
+      const statusLine =
+        `trading ${status.ready ? 'ready' : `not ready (${status.reason ?? 'unknown'})`} · ` +
+        `caps $${status.limits.maxOrderUsd}/order · $${status.limits.dailyUsd}/day`
       return {
         text: `${head}\n${depositLine}\n${statusLine}\n\n${positionLines.length ? positionLines.join('\n') : 'No open positions.'}`,
       }

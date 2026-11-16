@@ -139,7 +139,6 @@ window.__ModuleLoader__.load({
     const reasonText = (live, t) => {
       if (!live) return t('configNeeded')
       if (!live.configured?.key || !live.configured?.wallet) return t('configNeeded')
-      if (!live.enabled) return t('tradingDisabled')
       if (live.reason === 'approvals-missing') return t('approvalsMissing')
       if (!live.ready) return t('bridgeNotReady', { reason: live.reason ?? live.error ?? '' })
       return null
@@ -349,7 +348,6 @@ window.__ModuleLoader__.load({
       return t('sourceCredentials')
     }
     const capsOf = (limits, fallback) => ({
-      enabled: Boolean(limits?.enabled ?? fallback?.enabled ?? true),
       maxOrderUsd: Number(limits?.maxOrderUsd ?? fallback?.maxOrderUsd ?? 25),
       dailyUsd: Number(limits?.dailyUsd ?? fallback?.dailyUsd ?? 100),
     })
@@ -896,12 +894,6 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'pa-settings-card pa-settings-card--flat' },
           h('h3', null, t('obCapsTitle')),
-          h(
-            'label',
-            { className: 'pa-check' },
-            h('input', { type: 'checkbox', checked: Boolean(caps.enabled), onChange: (event) => setCaps({ ...caps, enabled: event.target.checked }) }),
-            h('span', null, t('obCapsEnable')),
-          ),
           h(
             'div',
             { className: 'pa-settings-numbers' },

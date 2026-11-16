@@ -154,8 +154,7 @@ straight into the DSH credentials store.
    *Settings* → *API keys* and paste both the API key and the signer address shown above
    it.
 4. **Approve and caps** — run the one-time approvals, then set the per-order and daily
-   USD caps and enable ordering in the panel. Defaults are deliberately small; raise them
-   when you trust the setup.
+   USD caps. Defaults are deliberately small; raise them when you trust the setup.
 
 You can reopen the guide from *Settings* at any time, and *Settings → Logout* clears the
 local credentials and local order records (it never touches positions, open orders or
@@ -224,8 +223,8 @@ filtered. `keywords.default.txt` seeds a new file.
   `state.json` or workspace snapshots. That store is plaintext YAML: rely on your OS account
   permissions and disk encryption, and prefer a dedicated or hardware wallet for large
   balances.
-- **Orders are capped.** Per-order and daily USD caps, plus an explicit enable switch, are
-  enforced by the Host before anything is signed. A cap change applies immediately.
+- **Orders are capped.** Per-order and daily USD caps are enforced by the Host before
+  anything is signed. A cap change applies immediately.
 - **Read-only tools.** Agent tools cannot place or cancel orders; that stays in the panel.
 - **Public data only.** Market data and portfolio reads use Polymarket's public endpoints;
   no website cookies or scraped sessions.
