@@ -1,6 +1,6 @@
 {
   "name": "dsh-polymarket-proxy",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Polymarket Proxy for DeepSeek Harness: a local portfolio, cash and deposit-address panel with an auto-refreshing market radar, live betting and instant position closes — for when the official Polymarket site blocks deposits or trading. Follows the Harness language (English unless the interface is Chinese).",
   "license": "MIT",
   "author": "dennisyang1986",

@@ -46,6 +46,14 @@ const STATUS_TTL_MS = 30_000
 const CALL_TIMEOUT_MS = 45_000
 /** Never let a marketable sell fall more than this below the best bid. */
 const SELL_SLIPPAGE = 0.03
+/**
+ * Polygon RPC for the SDK's on-chain checks. The SDK defaults to
+ * `polygon.drpc.org`, whose free plan refuses JSON-RPC batches above ten calls;
+ * `setupTradingApprovals()` checks seventeen allowances in one batch and gets
+ * an HTTP 400 there. Use the same public endpoint the Host already prefers for
+ * its Polygon scans.
+ */
+const POLYGON_RPC = 'https://polygon-bor-rpc.publicnode.com'
 
 // ---------------------------------------------------------------- pure helpers
 
@@ -112,6 +120,17 @@ function shortError(error) {
 
 function fingerprint(parts) {
   return createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 16)
+}
+
+/**
+ * JSON-safe view of the SDK's missing-approval lists. The raw ERC-20 entries
+ * carry a `bigint` amount, which `JSON.stringify` refuses to serialize.
+ */
+function missingView(state) {
+  return {
+    erc20: (state?.missing?.erc20 ?? []).map((entry) => entry.spenderAddress),
+    erc1155: (state?.missing?.erc1155 ?? []).map((entry) => entry.operatorAddress),
+  }
 }
 
 function bestBidOf(book) {
@@ -230,7 +249,10 @@ export function createBridge({ ctx }) {
     const mark = markOf(cfg)
     if (clientCache?.key === mark) return clientCache.client
     const lib = await sdk()
-    const options = { signer: lib.viem.privateKey(cfg.privateKey) }
+    const options = {
+      signer: lib.viem.privateKey(cfg.privateKey),
+      environment: { ...lib.client.production, rpc: POLYGON_RPC },
+    }
     if (cfg.wallet) options.wallet = cfg.wallet
     if (cfg.relayerKey && cfg.relayerAddress) {
       options.apiKey = lib.client.relayerApiKey({ key: cfg.relayerKey, address: cfg.relayerAddress })
@@ -285,8 +307,7 @@ export function createBridge({ ctx }) {
         cash: Number(balance?.balance ?? 0) / 1e6,
         approvals: {
           fully: Boolean(approvals?.isFullyApproved),
-          erc20: (approvals?.missing?.erc20 ?? []).map((entry) => entry.spenderAddress),
-          erc1155: (approvals?.missing?.erc1155 ?? []).map((entry) => entry.operatorAddress),
+          ...missingView(approvals),
         },
         at: new Date().toISOString(),
       }
@@ -507,7 +528,20 @@ export function createBridge({ ctx }) {
     let state
     let stage = 'setup'
     try {
-      await withTimeout(client.setupTradingApprovals(), 'approvals-setup', 120_000)
+      // `setupTradingApprovals` checks every required allowance in one
+      // JSON-RPC batch and submits a single gasless transaction. Some RPC
+      // providers refuse batches that large, so a failure here is not fatal:
+      // the indexed `missing` list below is enough to approve each entry
+      // through the SDK's public actions.
+      try {
+        await withTimeout(client.setupTradingApprovals(), 'approvals-setup', 120_000)
+      } catch (error) {
+        ctx.logger?.warn?.(
+          `polymarket-agent: trading approval batch failed; approving entries individually: ${shortError(error)}`,
+        )
+      }
+
+      stage = 'state'
       state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state')
       stage = 'erc20'
       for (const entry of state?.missing?.erc20 ?? []) {
@@ -538,7 +572,7 @@ export function createBridge({ ctx }) {
       stage = 'verify'
       state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state')
       statusCache = null
-      return { ok: true, fully: Boolean(state?.isFullyApproved), missing: state?.missing ?? null }
+      return { ok: true, fully: Boolean(state?.isFullyApproved), missing: missingView(state) }
     } catch (error) {
       statusCache = null
       return { ok: false, stage, error: shortError(error) }
