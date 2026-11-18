@@ -439,6 +439,30 @@ window.__ModuleLoader__.load({
       const [view, setView] = useState(initial ?? { configured: {} })
       const [live, setLive] = useState(liveProp ?? { ready: false })
       const [caps, setCaps] = useState(() => capsOf(liveProp?.limits))
+      // The last "一键授权" run reported by the Host (four steps), plus a flag
+      // that says whether a run is in flight right now.
+      const [approvalRun, setApprovalRun] = useState(null)
+      const [approving, setApproving] = useState(false)
+
+      // The approval POST only resolves when everything is done, so poll the
+      // Host's step record to let the 4-step log advance while it works.
+      useEffect(() => {
+        if (!approving) return undefined
+        let alive = true
+        const tick = () => {
+          api('/approve/status')
+            .then((payload) => {
+              if (alive && payload?.run) setApprovalRun(payload.run)
+            })
+            .catch(() => {})
+        }
+        tick()
+        const timer = setInterval(tick, 600)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [approving])
 
       const configured = view.configured ?? {}
       const keyValue = String(key ?? '').trim()
@@ -477,7 +501,7 @@ window.__ModuleLoader__.load({
       }
 
       const refresh = () =>
-        run(api('/onboarding').then((payload) => ({ onboarding: payload, live: payload.live }))).then((payload) => {
+        run(api('/onboarding?refresh=1').then((payload) => ({ onboarding: payload, live: payload.live }))).then((payload) => {
           if (!payload?.onboarding) return
           if (payload.onboarding.caps) setCaps(capsOf(payload.onboarding.caps))
           if (payload.onboarding.wallet) setWallet((current) => current || payload.onboarding.wallet)
@@ -578,10 +602,17 @@ window.__ModuleLoader__.load({
         })
       }
 
-      const approve = () =>
-        run(api('/approve', { method: 'POST', body: '{}' })).then((payload) => {
-          if (payload && !payload.ok) setError(`${payload.stage ?? 'approve'}: ${payload.error ?? 'failed'}`)
-        })
+      const approve = () => {
+        setApproving(true)
+        setApprovalRun(null)
+        return run(api('/approve', { method: 'POST', body: '{}' }))
+          .then((payload) => {
+            // A failed run explains itself step by step in the log above the
+            // button, so only transport-level trouble falls back to `error`.
+            if (payload?.run) setApprovalRun(payload.run)
+          })
+          .finally(() => setApproving(false))
+      }
 
       const finish = () =>
         run(api('/onboarding', { method: 'POST', body: JSON.stringify({ action: 'finish', caps }) })).then(
@@ -602,6 +633,103 @@ window.__ModuleLoader__.load({
       }
 
       const failed = error ? h('p', { className: 'pa-warn' }, t('obError', { error })) : null
+
+      // ------------------------------------------------------- approval flow
+      // Four steps mirror what the Host actually does, so a failure names the
+      // step instead of showing one opaque "fetch failed". Before the first
+      // run the same list doubles as a preview of what the button will do.
+      const statusUnreadable = !live.approvals
+      const idleApprovalSteps = [
+        {
+          id: 'credentials',
+          status: configured.key && configured.wallet ? 'ok' : 'pending',
+          data: { configured },
+          ms: null,
+        },
+        { id: 'session', status: 'pending', data: null, ms: null },
+        live.error
+          ? { id: 'state', status: 'error', data: { error: live.error }, ms: null }
+          : live.approvals
+            ? { id: 'state', status: 'ok', data: { fully: Boolean(live.approvals.fully) }, ms: null }
+            : { id: 'state', status: 'pending', data: null, ms: null },
+        { id: 'submit', status: 'pending', data: null, ms: null },
+      ]
+      const approvalSteps = approvalRun?.steps ?? idleApprovalSteps
+      const approvalDetail = (row) => {
+        const data = row.data ?? {}
+        if (data.error) return String(data.error)
+        if (row.id === 'credentials') {
+          const conf = data.configured ?? configured
+          const list = [
+            conf.key ? t('obFlowKey') : null,
+            conf.wallet ? t('obFlowWallet') : null,
+            conf.relayer ? t('obFlowRelayer') : null,
+          ].filter(Boolean)
+          return list.length ? t('obFlowConfigured', { list: list.join(' · ') }) : t('obFlowNotConfigured')
+        }
+        if (row.id === 'session') {
+          if (row.status === 'running' || !data.wallet) return null
+          return `${data.walletType ?? '—'} · ${shortAddress(data.wallet)}`
+        }
+        if (row.id === 'state') {
+          if (row.status === 'running' || data.fully === undefined) return null
+          if (data.fully) return t('obFlowStateReady')
+          return t('obFlowStateMissing', { count: (data.erc20 ?? 0) + (data.erc1155 ?? 0) })
+        }
+        if (row.id === 'submit') {
+          if (row.status === 'running') return t('obFlowSubmitting')
+          if (row.status === 'ok' || row.status === 'warn') {
+            if (data.fully) {
+              if (!data.submitted) return t('obFlowStateReady')
+              const base = t('obFlowSubmitted', { count: data.submitted })
+              return data.fallback ? `${base} · ${t('obFlowFallback')}` : base
+            }
+            return t('obFlowStillMissing', { count: (data.erc20 ?? 0) + (data.erc1155 ?? 0) })
+          }
+          if (row.status === 'pending') return t('obFlowPending')
+          return null
+        }
+        return null
+      }
+      const approvalFlow = h(
+        'div',
+        { className: 'pa-ob-flow' },
+        h(
+          'div',
+          { className: 'pa-ob-flow-head' },
+          h('span', null, t('obFlowTitle')),
+          approvalRun?.startedAt
+            ? h(
+                'span',
+                { className: 'pa-ob-flow-at' },
+                approvalRun.running
+                  ? t('obFlowRunning')
+                  : approvalRun.finishedAt
+                    ? t('obFlowTotal', {
+                        seconds: ((Date.parse(approvalRun.finishedAt) - Date.parse(approvalRun.startedAt)) / 1000).toFixed(1),
+                      })
+                    : timeLabel(approvalRun.startedAt, true),
+              )
+            : null,
+        ),
+        h(
+          'ol',
+          { className: 'pa-ob-flow-list' },
+          approvalSteps.map((row, index) =>
+            h(
+              'li',
+              { key: row.id, className: `pa-ob-flow-step pa-ob-flow-step--${row.status}` },
+              h('span', { className: 'pa-ob-flow-num' }, String(index + 1)),
+              h('span', { className: 'pa-ob-flow-dot', 'aria-hidden': 'true' }),
+              h('span', { className: 'pa-ob-flow-title' }, t(`obFlow_${row.id}`)),
+              h('span', { className: 'pa-ob-flow-detail' }, approvalDetail(row) ?? ''),
+              row.ms !== null && row.ms !== undefined
+                ? h('span', { className: 'pa-ob-flow-ms' }, `${(row.ms / 1000).toFixed(1)}s`)
+                : null,
+            ),
+          ),
+        ),
+      )
 
       const keyStep = h(
         'section',
@@ -880,16 +1008,34 @@ window.__ModuleLoader__.load({
             h('span', null, configured.relayer ? t('configured') : t('notConfigured')),
           ),
         ),
-        live.error ? h('p', { className: 'pa-warn' }, String(live.error)) : null,
+        live.error && !(ready && !approved) ? h('p', { className: 'pa-warn' }, String(live.error)) : null,
         ready && !approved
           ? h(
               'div',
               { className: 'pa-ob-callout' },
               h('p', null, t('obApproveWhy')),
-              h('button', { className: 'pa-btn pa-btn--primary', type: 'button', disabled: busy, onClick: approve }, busy ? t('obWorking') : t('obApprove')),
+              approvalFlow,
+              h(
+                'button',
+                {
+                  className: 'pa-btn pa-btn--primary',
+                  type: 'button',
+                  disabled: busy || statusUnreadable,
+                  onClick: approve,
+                },
+                busy ? t('obWorking') : t('obApprove'),
+              ),
+              statusUnreadable ? h('p', { className: 'pa-warn' }, t('obFlowNeedStatus')) : null,
             )
           : null,
-        ready && approved ? h('p', { className: 'pa-ok' }, t('obApprovedDone')) : null,
+        ready && approved
+          ? h(
+              React.Fragment,
+              null,
+              approvalRun?.result?.ok ? approvalFlow : null,
+              h('p', { className: 'pa-ok' }, t('obApprovedDone')),
+            )
+          : null,
         h(
           'div',
           { className: 'pa-settings-card pa-settings-card--flat' },
@@ -930,7 +1076,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'pa-ob-nav' },
           h('button', { className: 'pa-btn pa-btn--ghost', type: 'button', disabled: busy, onClick: goBack }, t('obBack')),
-          h('button', { className: 'pa-btn pa-btn--ghost', type: 'button', disabled: busy, onClick: refresh }, t('obCheckAgain')),
+          h('button', { className: 'pa-btn pa-btn--ghost', type: 'button', disabled: busy, onClick: refresh }, busy ? t('obWorking') : t('obCheckAgain')),
           h('button', { className: 'pa-btn pa-btn--ghost', type: 'button', disabled: busy, onClick: () => setStep(1) }, t('obRestart')),
           h('button', { className: 'pa-btn pa-btn--primary', type: 'button', disabled: busy, onClick: finish }, t('obFinish')),
         ),
@@ -3189,6 +3335,26 @@ a.pa-btn { display:inline-flex; align-items:center; justify-content:center; text
 .pa-ob-callout { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border-radius:10px;
   background:color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent); border:1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 35%, transparent); }
 .pa-ob-callout p { margin:0; font-size:12px; color:var(--dsw-alias-label-primary); }
+.pa-ob-flow { display:flex; flex-direction:column; gap:5px; padding:9px 11px; border-radius:9px;
+  background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l1); }
+.pa-ob-flow-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:10.5px;
+  font-weight:600; letter-spacing:.02em; color:var(--dsw-alias-label-secondary); }
+.pa-ob-flow-at { font-weight:500; letter-spacing:0; font-variant-numeric:tabular-nums; }
+.pa-ob-flow-list { display:flex; flex-direction:column; gap:3px; margin:0; padding:0; list-style:none; }
+.pa-ob-flow-step { display:grid; grid-template-columns:12px 8px max-content minmax(0,1fr) auto; align-items:center;
+  gap:7px; font-size:11.5px; line-height:1.5; color:var(--dsw-alias-label-secondary); }
+.pa-ob-flow-num { font-variant-numeric:tabular-nums; opacity:.45; }
+.pa-ob-flow-dot { width:8px; height:8px; border-radius:999px; border:1px solid var(--dsw-alias-border-l2); }
+.pa-ob-flow-title { color:var(--dsw-alias-label-primary); }
+.pa-ob-flow-detail { min-width:0; overflow-wrap:anywhere; }
+.pa-ob-flow-ms { font-variant-numeric:tabular-nums; opacity:.5; }
+.pa-ob-flow-step--ok .pa-ob-flow-dot { background:var(--dsw-alias-state-success-primary); border-color:transparent; }
+.pa-ob-flow-step--warn .pa-ob-flow-dot { background:var(--dsw-alias-state-warn-primary); border-color:transparent; }
+.pa-ob-flow-step--error .pa-ob-flow-dot { background:var(--dsw-alias-state-error-primary); border-color:transparent; }
+.pa-ob-flow-step--error .pa-ob-flow-detail { color:var(--dsw-alias-state-error-primary); }
+.pa-ob-flow-step--running .pa-ob-flow-dot { border-color:color-mix(in srgb, var(--dsw-alias-label-primary) 25%, transparent);
+  border-top-color:var(--dsw-alias-label-primary); animation:pa-ob-spin .8s linear infinite; }
+@keyframes pa-ob-spin { to { transform:rotate(360deg); } }
 .pa-field-block { display:flex; flex-direction:column; gap:5px; }
 .pa-field-label { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px;
   color:var(--dsw-alias-label-secondary); }
@@ -3653,6 +3819,26 @@ a.pa-btn { display:inline-flex; align-items:center; justify-content:center; text
         obApprovedDone: '交易授权已就绪。',
         obApproveWhy: 'Polymarket 要求先授权交易所动用你的 USDC 和结果代币（互斥多选市场还要授权 Neg Risk Adapter），否则订单会被拒绝。这个过程免 Gas，只需一次。',
         obApprove: '一键授权',
+        obFlowTitle: '授权流程',
+        obFlow_credentials: '检查凭据',
+        obFlow_session: '建立会话',
+        obFlow_state: '读取链上授权',
+        obFlow_submit: '提交并复核',
+        obFlowRunning: '进行中',
+        obFlowTotal: '共 {seconds}s',
+        obFlowPending: '等待前一步',
+        obFlowKey: '私钥',
+        obFlowWallet: '钱包',
+        obFlowRelayer: 'Relayer',
+        obFlowConfigured: '已配置：{list}',
+        obFlowNotConfigured: '凭据不完整',
+        obFlowStateReady: '已全部就绪',
+        obFlowStateMissing: '缺少 {count} 项授权',
+        obFlowSubmitting: '正在提交免 Gas 授权…',
+        obFlowSubmitted: '提交 {count} 项，复核通过',
+        obFlowFallback: '批量提交失败，已改为逐项',
+        obFlowStillMissing: '仍缺 {count} 项，请重试',
+        obFlowNeedStatus: '读不到账户状态，先按上面的错误排查网络；这一步不通过，授权发出去也会失败。',
         obCapsTitle: '下单限额',
         obCapsEnable: '允许在这个面板里下单',
         obCapOrder: '单笔上限（USD）',
@@ -4003,6 +4189,26 @@ a.pa-btn { display:inline-flex; align-items:center; justify-content:center; text
         obApprovedDone: 'Trading approvals are ready.',
         obApproveWhy: 'Polymarket requires approvals so the exchange can move your USDC and outcome tokens (neg-risk markets also need the Neg Risk Adapter). It is gasless and only needed once.',
         obApprove: 'Approve everything',
+        obFlowTitle: 'Approval steps',
+        obFlow_credentials: 'Check credentials',
+        obFlow_session: 'Open a session',
+        obFlow_state: 'Read on-chain approvals',
+        obFlow_submit: 'Submit and verify',
+        obFlowRunning: 'working',
+        obFlowTotal: 'took {seconds}s',
+        obFlowPending: 'waits for the step above',
+        obFlowKey: 'key',
+        obFlowWallet: 'wallet',
+        obFlowRelayer: 'relayer',
+        obFlowConfigured: 'Configured: {list}',
+        obFlowNotConfigured: 'Incomplete credentials',
+        obFlowStateReady: 'Everything is in place',
+        obFlowStateMissing: '{count} approval(s) missing',
+        obFlowSubmitting: 'Submitting gasless approvals…',
+        obFlowSubmitted: '{count} submitted, verified',
+        obFlowFallback: 'batch failed, fell back to one-by-one',
+        obFlowStillMissing: '{count} still missing — retry',
+        obFlowNeedStatus: 'The account status could not be read. Fix the error above first; an approval sent now would fail the same way.',
         obCapsTitle: 'Order caps',
         obCapsEnable: 'Enable ordering in the panel',
         obCapOrder: 'Per-order cap (USD)',

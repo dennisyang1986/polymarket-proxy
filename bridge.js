@@ -115,8 +115,35 @@ function shortError(error) {
     .replace(/0x[0-9a-fA-F]{40}/g, '0x…')
     .replace(/\s+/g, ' ')
     .trim()
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text || 'unknown-error'
+  const body = text.length > 240 ? `${text.slice(0, 240)}…` : text || 'unknown-error'
+  return `${body}${networkDetail(error)}`
 }
+
+/**
+ * `fetch failed` on its own says nothing. The SDK wraps the undici error once
+ * more (`TransportError → TypeError → Error`), so the code and host sit two
+ * `cause` hops down; walk the chain instead of reading only `error.cause`.
+ */
+function networkDetail(error) {
+  const seen = new Set()
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 4 || seen.has(node)) return ''
+    seen.add(node)
+    if (node.name === 'TimeoutError') return ' (timeout)'
+    const code = typeof node.code === 'string' ? node.code : ''
+    const host = typeof node.hostname === 'string' ? node.hostname : ''
+    if (code) return ` (${code}${host ? ` ${host}` : ''})`
+    if (Array.isArray(node.errors)) {
+      for (const sub of node.errors) {
+        const hit = walk(sub, depth + 1)
+        if (hit) return hit
+      }
+    }
+    return walk(node.cause, depth + 1)
+  }
+  return walk(error, 0)
+}
+
 
 function fingerprint(parts) {
   return createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 16)
@@ -520,13 +547,77 @@ export function createBridge({ ctx }) {
    * Grant the approvals a fresh account needs: the SDK's trading approvals,
    * then whatever the state still reports missing (the neg-risk adapter is not
    * covered by `setupTradingApprovals`).
+   *
+   * The run reports a `{ step, status, data, error }` event per step so the
+   * panel can show a live 1-2-3-4 log instead of one opaque spinner:
+   * `credentials` → `session` → `state` → `submit`. Reporting must never break
+   * the approval itself, so every call is wrapped.
+   *
+   * @param {{ onProgress?: (event: { step: string, status: string, data?: object, error?: string }) => void }} [options]
    */
-  async function approveAll() {
-    const cfg = await config()
-    const client = await getClient(cfg)
-    const lib = await sdk()
+  async function approveAll(options = {}) {
+    const report = (step, status, data) => {
+      try {
+        options.onProgress?.({ step, status, ...(data ? { data } : {}) })
+      } catch {
+        /* progress reporting is best-effort */
+      }
+    }
+    const fail = (step, error) => {
+      const message = shortError(error)
+      report(step, 'error', { error: message })
+      statusCache = null
+      return { ok: false, stage: step, error: message }
+    }
+
+    report('credentials', 'running')
+    let cfg
+    try {
+      cfg = await config()
+    } catch (error) {
+      return fail('credentials', error)
+    }
+    const configured = configuredOf(cfg)
+    if (!configured.key) return fail('credentials', new Error('no-private-key'))
+    if (!configured.wallet) return fail('credentials', new Error('no-wallet'))
+    report('credentials', 'ok', { configured })
+
+    report('session', 'running')
+    let client
+    try {
+      client = await withTimeout(getClient(cfg), 'approve-client', 45_000)
+    } catch (error) {
+      return fail('session', error)
+    }
+    report('session', 'ok', {
+      wallet: client.account?.wallet ?? cfg.wallet,
+      walletType: walletTypeName(client.account?.walletType),
+    })
+
+    let lib
+    try {
+      lib = await sdk()
+    } catch (error) {
+      return fail('state', error)
+    }
+
+    report('state', 'running')
     let state
-    let stage = 'setup'
+    try {
+      state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state', 20_000)
+    } catch (error) {
+      return fail('state', error)
+    }
+    const before = missingView(state)
+    report('state', 'ok', {
+      fully: Boolean(state?.isFullyApproved),
+      erc20: before.erc20.length,
+      erc1155: before.erc1155.length,
+    })
+
+    report('submit', 'running')
+    let submitted = 0
+    let fallback = false
     try {
       // `setupTradingApprovals` checks every required allowance in one
       // JSON-RPC batch and submits a single gasless transaction. Some RPC
@@ -534,17 +625,19 @@ export function createBridge({ ctx }) {
       // the indexed `missing` list below is enough to approve each entry
       // through the SDK's public actions.
       try {
-        await withTimeout(client.setupTradingApprovals(), 'approvals-setup', 120_000)
+        await withTimeout(client.setupTradingApprovals(), 'approvals-setup', 150_000)
+        // The batch is a single gasless transaction; count it so the panel does
+        // not claim "0 submitted" when the batch is what fixed the account.
+        if (before.erc20.length + before.erc1155.length > 0) submitted += 1
       } catch (error) {
+        fallback = true
         ctx.logger?.warn?.(
           `polymarket-agent: trading approval batch failed; approving entries individually: ${shortError(error)}`,
         )
       }
 
-      stage = 'state'
-      state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state')
-      stage = 'erc20'
-      for (const entry of state?.missing?.erc20 ?? []) {
+      const pending = missingView(await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state'))
+      for (const entry of pending.erc20) {
         const handle = await withTimeout(
           lib.actions.approveErc20(client, {
             tokenAddress: entry.tokenAddress,
@@ -555,9 +648,9 @@ export function createBridge({ ctx }) {
           120_000,
         )
         await handle.wait()
+        submitted += 1
       }
-      stage = 'erc1155'
-      for (const entry of state?.missing?.erc1155 ?? []) {
+      for (const entry of pending.erc1155) {
         const handle = await withTimeout(
           lib.actions.approveErc1155ForAll(client, {
             tokenAddress: entry.tokenAddress,
@@ -568,14 +661,23 @@ export function createBridge({ ctx }) {
           120_000,
         )
         await handle.wait()
+        submitted += 1
       }
-      stage = 'verify'
-      state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-state')
+
+      state = await withTimeout(client.fetchTradingApprovalsState(), 'approvals-verify')
+      const missing = missingView(state)
+      const fully = Boolean(state?.isFullyApproved)
+      report('submit', fully ? 'ok' : 'warn', {
+        submitted,
+        fallback,
+        fully,
+        erc20: missing.erc20.length,
+        erc1155: missing.erc1155.length,
+      })
       statusCache = null
-      return { ok: true, fully: Boolean(state?.isFullyApproved), missing: missingView(state) }
+      return { ok: true, fully, missing, submitted, fallback }
     } catch (error) {
-      statusCache = null
-      return { ok: false, stage, error: shortError(error) }
+      return fail('submit', error)
     }
   }
 

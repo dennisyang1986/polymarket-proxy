@@ -345,7 +345,46 @@ function shortError(error) {
     .replace(/0x[0-9a-fA-F]{40}/g, '0x…')
     .replace(/\s+/g, ' ')
     .trim()
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text || 'unknown-error'
+  const body = text.length > 240 ? `${text.slice(0, 240)}…` : text || 'unknown-error'
+  return `${body}${networkDetail(error)}`
+}
+
+/**
+ * `fetch failed` on its own says nothing. The SDK wraps the undici error once
+ * more (`TransportError → TypeError → Error`), so the code and host sit two
+ * `cause` hops down; walk the chain instead of reading only `error.cause`.
+ */
+function networkDetail(error) {
+  const seen = new Set()
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 4 || seen.has(node)) return ''
+    seen.add(node)
+    if (node.name === 'TimeoutError') return ' (timeout)'
+    const code = typeof node.code === 'string' ? node.code : ''
+    const host = typeof node.hostname === 'string' ? node.hostname : ''
+    if (code) return ` (${code}${host ? ` ${host}` : ''})`
+    if (Array.isArray(node.errors)) {
+      for (const sub of node.errors) {
+        const hit = walk(sub, depth + 1)
+        if (hit) return hit
+      }
+    }
+    return walk(node.cause, depth + 1)
+  }
+  return walk(error, 0)
+}
+
+
+/**
+ * Errors worth one automatic retry: the DNS/socket/TLS layer hiccuped, so the
+ * next attempt may simply work. A malformed key, a missing wallet or a
+ * rejected order is deterministic and must fail fast instead.
+ */
+export function isTransientStatusError(status) {
+  if (status?.reason !== 'bridge-error') return false
+  return /fetch failed|socket|timeout|EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|UND_ERR_/i.test(
+    String(status.error ?? ''),
+  )
 }
 
 /** Shorten a public address for agent-visible text and logs. */
@@ -831,6 +870,59 @@ export function createRuntime(ctx, config) {
     onboarding: { done: false, skipped: false, completedAt: null },
   }
   const bridge = createBridge({ ctx })
+
+  /**
+   * Progress of the last "一键授权" run. The panel polls `/approve/status`
+   * while the POST is in flight, so the four steps can be shown one by one
+   * instead of a silent two-minute spinner.
+   */
+  let approvalRun = null
+  const APPROVAL_STEPS = ['credentials', 'session', 'state', 'submit']
+
+  function startApprovalRun() {
+    approvalRun = {
+      id: Number(approvalRun?.id ?? 0) + 1,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      running: true,
+      steps: APPROVAL_STEPS.map((id) => ({ id, status: 'pending', at: null, ms: null, data: null })),
+      result: null,
+    }
+    return approvalRun
+  }
+
+  function recordApproval(event) {
+    const run = approvalRun
+    if (!run?.running) return
+    const step = run.steps.find((row) => row.id === event?.step)
+    if (!step) return
+    const now = Date.now()
+    if (step.at === null) step.at = now
+    if (event.status === 'running') {
+      step.status = 'running'
+      step.ms = null
+    } else {
+      step.status = event.status === 'error' ? 'error' : event.status === 'warn' ? 'warn' : 'ok'
+      step.ms = now - step.at
+    }
+    if (event.data) step.data = event.data
+  }
+
+  function finishApprovalRun(result) {
+    if (!approvalRun) return approvalRun
+    approvalRun.running = false
+    approvalRun.finishedAt = new Date().toISOString()
+    approvalRun.result = {
+      ok: Boolean(result?.ok),
+      stage: result?.stage ?? null,
+      error: result?.error ?? null,
+    }
+    // Never leave a step spinning once the run is over.
+    for (const step of approvalRun.steps) {
+      if (step.status === 'running') step.status = 'error'
+    }
+    return approvalRun
+  }
 
   /**
    * Live view of the keyword filter. `keywords` are folded substrings read from
@@ -1476,7 +1568,17 @@ export function createRuntime(ctx, config) {
     const limits = tradingLimits()
     const spend = spendToday()
     const pending = pendingNotional()
-    const status = await bridge.status(force)
+    const startedAt = Date.now()
+    let status = await bridge.status(force)
+    // A forced read bypasses the 30 s status cache. Retry one fast, transient
+    // failure so a single blip does not paint an error card the user has to
+    // clear by hand; a call that already hung for seconds is not retried.
+    let retried = false
+    if (force && Date.now() - startedAt < 2_500 && isTransientStatusError(status)) {
+      await sleep(450)
+      status = await bridge.status(true)
+      retried = true
+    }
     if (state.orders.some((order) => order.status === 'open' && order.orderType === 'limit')) {
       void syncOpenOrders()
     }
@@ -1496,6 +1598,7 @@ export function createRuntime(ctx, config) {
       orders: state.orders.slice(0, 12),
       reason: status.reason,
       error: status.error,
+      retried,
       at: status.at,
     }
   }
@@ -2284,7 +2387,10 @@ export function createRuntime(ctx, config) {
       }
       if (method === 'GET' && route === '/onboarding') {
         await load()
-        return send(res, 200, { ...(await onboardingView()), live: await liveStatus(), caps: tradingLimits() })
+        // The panel's "刷新状态" button sends `?refresh=1`: bypass the 30 s
+        // status cache so one click really re-probes the account.
+        const force = url.searchParams.get('refresh') === '1'
+        return send(res, 200, { ...(await onboardingView()), live: await liveStatus(force), caps: tradingLimits() })
       }
       if (method === 'POST' && route === '/onboarding') {
         if (!isLoopback(req)) return send(res, 403, { ok: false, error: 'loopback-only' })
@@ -2317,10 +2423,23 @@ export function createRuntime(ctx, config) {
         if (!isLoopback(req)) return send(res, 403, { ok: false, error: 'loopback-only' })
         return send(res, 200, await logout())
       }
+      if (method === 'GET' && route === '/approve/status') {
+        // Polled by the panel while a run is in flight; cheap and read-only.
+        return send(res, 200, { run: approvalRun })
+      }
       if (method === 'POST' && route === '/approve') {
         if (!isLoopback(req)) return send(res, 403, { ok: false, error: 'loopback-only' })
-        const result = await bridge.approveAll()
-        return send(res, 200, { ...result, live: await liveStatus(true) })
+        if (approvalRun?.running) return send(res, 409, { ok: false, error: 'approval-running', run: approvalRun })
+        startApprovalRun()
+        let result
+        try {
+          result = await bridge.approveAll({ onProgress: recordApproval })
+        } catch (error) {
+          result = { ok: false, stage: 'approve', error: shortError(error) }
+        } finally {
+          finishApprovalRun(result)
+        }
+        return send(res, 200, { ...result, run: approvalRun, live: await liveStatus(true) })
       }
       if (method === 'POST' && route === '/order') {
         const body = await readBody(req)

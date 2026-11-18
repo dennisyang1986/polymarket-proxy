@@ -75,6 +75,11 @@ the language. The panel follows the DeepSeek Harness language automatically — 
 - **Betting** — market buy by USD amount or limit (GTC) buy by price and shares; the
   confirmation modal shows the order book, estimated average price, estimated shares,
   today's remaining budget and the potential payout.
+- **Approvals** — the one-time gasless approval trading needs. The panel walks four
+  steps (credentials → session → on-chain state → submit and verify), reporting pass or
+  fail, timing and the real reason (for example `fetch failed (ENOTFOUND
+  clob.polymarket.com)`); *Refresh status* re-probes the account and retries one
+  transient network failure.
 - **Positions** — current and redeemable positions, history, and one-click market close.
 - **Orders** — open orders listed in the panel, cancellable in place.
 - **Agent tools** — two read-only tools let the agent list the radar
@@ -235,6 +240,7 @@ filtered. `keywords.default.txt` seeds a new file.
 |---|---|
 | `Trading bridge not ready` | Complete the signing key and account wallet steps, then run *Approve everything* in *Settings*. |
 | `Approvals missing` | Polymarket's one-time approvals were not submitted. Fill in the Relayer key/signer address and approve again. |
+| `fetch failed (…)` | The Host cannot reach Polymarket or the relayer; the parentheses name the real error code and host. Check `clob.polymarket.com`, `polygon-bor-rpc.publicnode.com` and `relayer-v2.polymarket.com`, then press *Refresh status*. |
 | Deposit address not identified | The account has no public deposit history yet. Paste the address from the official deposit modal once. |
 | The radar is empty | Clear the search and category, then press *Refresh*; if it stays empty, lower `minVolume24h` or raise `maxDays` in the plugin settings and reload. |
 | Titles do not match the interface language | Switch the Harness language once, or reload the page after changing it. The Host re-sweeps automatically. |
